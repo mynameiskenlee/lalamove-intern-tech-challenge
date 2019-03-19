@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"log"
+	"os"
 	"sort"
+	"strings"
 
 	"github.com/coreos/go-semver/semver"
 	"github.com/google/go-github/github"
@@ -24,18 +28,20 @@ func LatestVersions(releases []*semver.Version, minVersion *semver.Version) []*s
 	sliceVer := releases[0].Slice() //slice the version to major, minor and patch array and store it
 	version := releases[0]          //store the current version
 	for i := 0; i < len(releases); i++ {
-		temp := releases[i].Slice() //slice the version to major, minor and patch array and store it to a temp variable
-		if temp[0] > sliceVer[0] || temp[1] > sliceVer[1]{  //check if the major or minor version changed
+		temp := releases[i].Slice()                         //slice the version to major, minor and patch array and store it to a temp variable
+		if temp[0] > sliceVer[0] || temp[1] > sliceVer[1] { //check if the major or minor version changed
 			versionSlice = append([]*semver.Version{version}, versionSlice...) //store the previous version to array
 			sliceVer = temp                                                    //update the sliceVer variable
 			version = releases[i]                                              //change to a higher version
 		}
-		if temp[2] > sliceVer[2] {
+		if temp[2] >= sliceVer[2] {
 			sliceVer[2] = temp[2] //update the sliceVer variable
 			version = releases[i] //change the current version to a higher patch
 		}
 	}
-	versionSlice = append([]*semver.Version{version}, versionSlice...) //since the last one haven't been stored to the array, now store it
+	if version.PreRelease == "" { //if the latest version is a prerelease,don't add it
+		versionSlice = append([]*semver.Version{version}, versionSlice...) //since the last one haven't been stored to the array, now store it
+	}
 	return versionSlice
 }
 
@@ -48,20 +54,39 @@ func main() {
 	client := github.NewClient(nil)
 	ctx := context.Background()
 	opt := &github.ListOptions{PerPage: 10}
-	releases, _, err := client.Repositories.ListReleases(ctx, "kubernetes", "kubernetes", opt)
+	if len(os.Args) != 2 {
+		log.Fatal("\n Please provide only one argument (filepath)")
+	}
+	file, err := os.Open(os.Args[1])
 	if err != nil {
-		panic(err) // is this really a good way?
+		log.Fatal(err)
 	}
-	minVersion := semver.New("1.11.0")
-	allReleases := make([]*semver.Version, len(releases))
-	for i, release := range releases {
-		versionString := *release.TagName
-		if versionString[0] == 'v' {
-			versionString = versionString[1:]
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	scanner.Scan()
+	if (scanner.Text()) != "repository,min_version" {
+		log.Fatal("\n Wrong file format")
+	}
+	for scanner.Scan() {
+		s := strings.Split(scanner.Text(), ",")
+		minVersion := semver.New(s[1])
+		repo := strings.Split(s[0], "/")
+		releases, _, err := client.Repositories.ListReleases(ctx, repo[0], repo[1], opt)
+		if err != nil {
+			log.Fatal(err)
 		}
-		allReleases[i] = semver.New(versionString)
-	}
-	versionSlice := LatestVersions(allReleases, minVersion)
 
-	fmt.Printf("latest versions of kubernetes/kubernetes: %s", versionSlice)
+		allReleases := make([]*semver.Version, len(releases))
+		for i, release := range releases {
+			versionString := *release.TagName
+			if versionString[0] == 'v' {
+				versionString = versionString[1:]
+			}
+			allReleases[i] = semver.New(versionString)
+		}
+		versionSlice := LatestVersions(allReleases, minVersion)
+
+		fmt.Printf("latest versions of %s/%s: %s\n", repo[0], repo[1], versionSlice)
+	}
+
 }
